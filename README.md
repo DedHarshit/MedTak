@@ -1,7 +1,9 @@
 ⚙️ Setup Instructions
 1️⃣ Clone the repository
+
 git clone https://github.com/DedHarshit/MedTak.git
 cd MedTak
+
 2️⃣ Create virtual environment
 python -m venv .venv
 
