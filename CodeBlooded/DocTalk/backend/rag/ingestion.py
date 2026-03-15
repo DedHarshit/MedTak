@@ -2,9 +2,9 @@ import os
 from pathlib import Path
 
 from langchain_community.document_loaders import TextLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
+from langchain_core.documents import Document
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -14,6 +14,7 @@ DB_DIR = BASE_DIR / "db" / "chroma_db"
 
 def load_documents():
     """Load medical documents"""
+
     print("Loading medical documents...")
 
     file_path = DATA_DIR / "fake_medicine_data.txt"
@@ -30,21 +31,34 @@ def load_documents():
         raise ValueError("Medical dataset is empty")
 
     print(f"Loaded {len(documents)} document(s)")
+
     return documents
 
 
 def split_documents(documents):
-    """Split documents into chunks"""
-    print("Splitting documents into chunks...")
+    """
+    Split dataset into logical chunks.
+    Each medicine / topic becomes its own chunk.
+    """
 
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=120,
-        chunk_overlap=20
-    )
+    print("Splitting documents by medicine entry...")
 
-    chunks = splitter.split_documents(documents)
+    text = documents[0].page_content
+
+    # dataset entries are separated by blank lines
+    entries = text.split("\n\n")
+
+    chunks = []
+
+    for entry in entries:
+
+        entry = entry.strip()
+
+        if entry:
+            chunks.append(Document(page_content=entry))
 
     print(f"Created {len(chunks)} chunks")
+
     return chunks
 
 
