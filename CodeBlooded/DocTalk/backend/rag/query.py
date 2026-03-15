@@ -2,82 +2,90 @@ from pathlib import Path
 import os
 from dotenv import load_dotenv
 from openai import OpenAI
-
 from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 
-
-# Load environment variables
 load_dotenv()
 
-# Paths
 BASE_DIR = Path(__file__).resolve().parent.parent
 DB_DIR = BASE_DIR / "db" / "chroma_db"
 
-# Load GitHub Models API Key
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
 if not GITHUB_TOKEN:
     raise ValueError("GITHUB_TOKEN not found in .env file")
 
-# OpenAI compatible client (GitHub Models)
 client = OpenAI(
     base_url="https://models.inference.ai.azure.com",
     api_key=GITHUB_TOKEN
 )
 
-
-# Load embedding model
 embedding_model = HuggingFaceEmbeddings(
     model_name="sentence-transformers/all-MiniLM-L6-v2"
 )
 
 
-# Load vector database
 def load_vectorstore():
     print("Loading vector database...")
-
     vectorstore = Chroma(
         persist_directory=str(DB_DIR),
         embedding_function=embedding_model
     )
-
     return vectorstore
 
 
-# Retrieve relevant documents with threshold filtering
-def retrieve_documents(query, vectorstore, threshold=0.6):
+def rewrite_query(question, history):
+    prompt = f"""
+Rewrite the user question into a standalone medical search query.
 
-    results = vectorstore.similarity_search_with_score(query, k=5)
+Conversation history:
+{history}
+
+User question:
+{question}
+
+Return ONLY the rewritten query.
+"""
+
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": "You rewrite queries for search."},
+            {"role": "user", "content": prompt}
+        ],
+        temperature=0
+    )
+
+    return response.choices[0].message.content.strip()
+
+
+def retrieve_documents(query, vectorstore, threshold=1.2):
+    results = vectorstore.similarity_search_with_score(query, k=6)
 
     filtered_docs = []
 
     for doc, score in results:
+        if score <= threshold:
+            filtered_docs.append((doc, score))
 
-        similarity = 1 - score
+    filtered_docs.sort(key=lambda x: x[1])
 
-        if similarity >= threshold:
-            filtered_docs.append((doc, similarity))
-
-    # Sort by similarity (reranking)
-    filtered_docs.sort(key=lambda x: x[1], reverse=True)
-
-    return [doc for doc, _ in filtered_docs[:3]]
+    return [doc for doc, _ in filtered_docs[:4]]
 
 
-# Generate answer using GitHub LLM
 def generate_answer(question, context, history):
-
     prompt = f"""
 You are DocTalk AI, a healthcare assistant.
 
-Your job is to explain medical information in simple language.
+Use ONLY the provided medical context.
 
 Rules:
-- Only answer using the provided context
-- If the answer is not in the context, say you do not know
-- Never provide medical diagnosis
-- Always add a short medical disclaimer
+
+- If the answer is not present in the context say:
+  "I do not know based on the available medical data."
+- Do not invent medical information
+- Never provide diagnosis
+- Explain medical information simply
 
 Conversation History:
 {history}
@@ -88,32 +96,34 @@ Medical Context:
 User Question:
 {question}
 
-Answer:
+Provide a clear explanation.
+
+Always end with:
+
+Disclaimer: This information is for educational purposes only and not a substitute for professional medical advice.
 """
 
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
-            {"role": "system", "content": "You are a helpful medical assistant."},
+            {"role": "system", "content": "You are a medical information assistant."},
             {"role": "user", "content": prompt}
         ],
-        temperature=0.2
+        temperature=0.1
     )
 
     return response.choices[0].message.content
 
 
-# CLI chat loop
 def main():
-
     print("DocTalk AI Health Assistant")
 
     vectorstore = load_vectorstore()
 
     conversation_history = ""
+    last_context = ""
 
     while True:
-
         user_question = input("\nAsk a medical question (or type 'exit'): ")
 
         if user_question.lower() == "exit":
@@ -121,8 +131,13 @@ def main():
             break
 
         try:
+            search_query = rewrite_query(user_question, conversation_history)
 
-            docs = retrieve_documents(user_question, vectorstore)
+            docs = retrieve_documents(search_query, vectorstore)
+
+            if not docs and last_context:
+                fallback_query = last_context + " " + user_question
+                docs = retrieve_documents(fallback_query, vectorstore)
 
             if not docs:
                 print("\nAnswer:\n")
@@ -131,16 +146,16 @@ def main():
 
             context = "\n\n".join([doc.page_content for doc in docs])
 
+            last_context = context
+
             answer = generate_answer(user_question, context, conversation_history)
 
             print("\nAnswer:\n")
             print(answer)
 
-            # update conversation memory
             conversation_history += f"\nUser: {user_question}\nAssistant: {answer}\n"
 
         except Exception as e:
-
             print("\nError processing your request.")
             print(str(e))
 
